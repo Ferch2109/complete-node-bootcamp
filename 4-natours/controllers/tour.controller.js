@@ -1,118 +1,200 @@
 const fs = require('fs');
+const Tour = require('./../models/tour.model');
+const APIFeatures = require('../utils/apiFeatures');
 
-const data = fs.readFileSync(`${__dirname}/../dev-data/data/tours-simple.json`);
-let tours = JSON.parse(data);
-
-// middleware
-exports.validateID = (req, res, next, val) => {
-	const id = val * 1;
-	if (isNaN(id)) {
-		return res.status(400).json({
-			status: 'fail',
-			message: 'Invalid ID: Must be a number',
-		});
-	}
-
-	const tour = tours.find((t) => t.id === id);
-	if (!tour) {
-		return res.status(400).json({
-			status: 'fail',
-			message: 'Invalid ID: No coincidences',
-		});
-	}
+exports.aliasTopTours = async (req, _, next) => {
+	req.query.limit = 5;
+	req.query.sort = '-ratingsAverage,price';
+	req.query.fields = 'name,price,ratingsAverage,summary,difficulty';
 
 	next();
 };
 
-exports.validateBody = (req, res, next) => {
-	if (!req.body || !req.body.name || !req.body.price) {
-		return res.status(400).json({
+exports.getAllTours = async (req, res) => {
+	try {
+		console.log('first ', req.query);
+
+		// Execute query
+		const features = new APIFeatures(Tour.find(), req.query)
+			.filter()
+			.sort()
+			.limitFields()
+			.paginate();
+		const tours = await features.query;
+
+		// SEND RESPONSE
+		res.status(200).json({
+			status: 'success',
+			requestedAt: req.requestTime,
+			length: tours.length,
+			data: tours,
+		});
+	} catch (error) {
+		res.status(404).json({
 			status: 'fail',
-			message: 'Missing name or price',
+			message: error.message,
 		});
 	}
-
-	next();
 };
 
-exports.getAllTours = (req, res) => {
-	res.status(200).json({
-		status: 'success',
-		requestedAt: req.requestTime,
-		length: tours.length,
-		data: tours,
-	});
+exports.getTour = async (req, res) => {
+	try {
+		const tour = await Tour.findById(req.params.id);
+		console.log(tour);
+
+		return res.status(200).json({
+			status: 'success',
+			tour,
+		});
+	} catch (error) {
+		res.status(404).json({
+			status: 'fail',
+			message: error.message,
+		});
+	}
 };
 
-exports.getTour = (req, res) => {
-	const id = req.params.id * 1;
-	const tour = tours.find((t) => t.id === id);
-
-	return res.status(200).json({
-		status: 'success',
-		tour,
-	});
+exports.createTour = async (req, res) => {
+	try {
+		const tour = await Tour.create(req.body);
+		res.status(201).json({
+			status: 'success',
+			data: { tour },
+		});
+	} catch (error) {
+		res.status(400).json({
+			status: 'fail',
+			message: error.message,
+		});
+	}
 };
 
-exports.createTour = (req, res) => {
-	const id = tours[tours.length - 1].id + 1;
-	const newTour = Object.assign({ id }, req.body);
+exports.updateTour = async (req, res) => {
+	// const id = req.params.id * 1;
+	try {
+		const tour = await Tour.findByIdAndUpdate(req.params.id, req.body, {
+			new: true, // true to return the modified document rather than the original.
+			runValidators: true,
+		});
 
-	tours.push(newTour);
-	fs.writeFile(
-		`${__dirname}/dev-data/data/tours-simple.json`,
-		JSON.stringify(tours),
-		(err) => {
-			res.status(201).json({
-				status: 'success',
-				data: { tour: newTour },
-			});
-		}
-	);
+		res.status(200).json({
+			status: 'success',
+			data: { tour },
+		});
+	} catch (error) {
+		res.status(400).json({
+			status: 'fail',
+			message: error.message,
+		});
+	}
 };
 
-exports.updateTour = (req, res) => {
-	const id = req.params.id * 1;
-	const { idx, tour } = tours.map((t, idx) => {
-		if (t.id === id) {
-			return {
-				idx,
-				tour: t,
-			};
-		}
-	});
-
-	const updTour = {
-		...tour,
-		...req.body,
-	};
-
-	tours[idx] = updTour;
-
-	fs.writeFile(
-		`${__dirname}/dev-data/data/tours-simple.json`,
-		JSON.stringify(tours),
-		(err) => {
-			res.status(200).json({
-				status: 'success',
-				data: { tour: updTour },
-			});
-		}
-	);
+exports.deleteTour = async (req, res) => {
+	try {
+		await Tour.findByIdAndDelete(req.params.id);
+		res.status(204).json({
+			status: 'success',
+			data: null,
+		});
+	} catch (error) {
+		res.status(400).json({
+			status: 'fail',
+			message: error.message,
+		});
+	}
 };
 
-exports.deleteTour = (req, res) => {
-	const id = req.params.id * 1;
-	tours = tours.filter((t) => t.id !== id);
+exports.getToursStats = async (req, res) => {
+	try {
+		const stats = await Tour.aggregate([
+			{
+				$match: {
+					ratingsAverage: { $gte: 4.5 },
+				},
+			},
+			{
+				$group: {
+					// _id: null, // sets all in 1 big group
+					_id: { $toUpper: '$difficulty' }, // will set a group for each level
+					numTours: { $sum: 1 }, // for each tour will add one
+					numRatings: { $sum: '$ratingsQuantity' },
+					avgRating: { $avg: '$ratingsAverage' },
+					avgPrice: { $avg: '$price' },
+					minPrice: { $min: '$price' },
+					maxPrice: { $max: '$price' },
+				},
+			},
+			{
+				$sort: { avgPrice: 1 },
+			},
+			// {
+			// 	$match: {
+			// 		_id: { $ne: 'EASY' },
+			// 	},
+			// },
+		]);
 
-	fs.writeFile(
-		`${__dirname}/dev-data/data/tours-simple.json`,
-		JSON.stringify(tours),
-		(err) => {
-			res.status(204).json({
-				status: 'success',
-				data: null,
-			});
-		}
-	);
+		res.status(200).json({
+			status: 'success',
+			data: { stats },
+		});
+	} catch (error) {
+		res.status(404).json({
+			status: 'fail',
+			message: error.message,
+		});
+	}
+};
+
+exports.getMonthlyPlan = async (req, res) => {
+	try {
+		const year = req.params.year;
+		const plan = await Tour.aggregate([
+			{
+				$unwind: '$startDates',
+			},
+			{
+				$match: {
+					startDates: {
+						$gte: new Date(`${year}-01-01`),
+						$lte: new Date(`${year}-12-31`),
+					},
+				},
+			},
+			{
+				$group: {
+					_id: { $month: '$startDates' },
+					numTourStarts: { $sum: 1 },
+					tours: { $push: '$name' },
+				},
+			},
+			{
+				$addFields: { month: '$_id' },
+			},
+			{
+				$project: {
+					_id: 0,
+				},
+			},
+			{
+				$sort: {
+					numTourStarts: -1,
+				},
+			},
+			{
+				$limit: 6
+			}
+		]);
+
+		res.status(200).json({
+			status: 'success',
+			results: plan.length,
+			data: { plan },
+		});
+	} catch (error) {
+		res.status(404).json({
+			status: 'fail',
+			message: error.message,
+		});
+	}
 };
